@@ -7,12 +7,21 @@ declare global {
   var _dcPool: Pool | undefined;
 }
 
+/**
+ * Aceita tanto o DSN do SQLAlchemy (`postgresql+asyncpg://...`, usado pelo
+ * lang-atendente) quanto o padrão. A lib `pg` só entende `postgresql://`,
+ * então removemos o sufixo do driver (`+asyncpg`, `+psycopg`, etc.).
+ */
+function normalizePgUrl(url: string): string {
+  return url.replace(/^postgres(ql)?\+\w+:\/\//i, "postgresql://");
+}
+
 function pool(): Pool {
   const url = process.env.DENTAL_CARD_DATABASE_URL;
   if (!url) throw new Error("DENTAL_CARD_DATABASE_URL não configurada no servidor.");
   if (!global._dcPool) {
     global._dcPool = new Pool({
-      connectionString: url,
+      connectionString: normalizePgUrl(url),
       ssl: process.env.DENTAL_CARD_DB_SSL === "true" ? { rejectUnauthorized: false } : undefined,
       max: 4,
       idleTimeoutMillis: 30_000,
