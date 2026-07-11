@@ -5,6 +5,7 @@ import type {
   ApiResult,
   ChatMessage,
   DisparoOut,
+  HistoryMsg,
   Simulation,
   TemplateDef,
   WebhookOut,
@@ -14,7 +15,6 @@ import { buildTemplateVars, renderTemplate, whatsToHtml } from "@/lib/format";
 function uid(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
-
 function ana(text: string): ChatMessage {
   return { id: uid(), role: "ana", text, ts: Date.now() };
 }
@@ -36,21 +36,10 @@ export default function ChatPanel({ template, sim, clinicName, onClose }: Props)
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [starting, setStarting] = useState(false);
+  const [busy, setBusy] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
 
-  const storageKey = `dcsim:conv:v1:${template.id}:${sim.id}`;
-
-  const persist = useCallback(
-    (msgs: ChatMessage[]) => {
-      try {
-        localStorage.setItem(storageKey, JSON.stringify(msgs));
-      } catch {
-        /* ignore quota */
-      }
-    },
-    [storageKey]
-  );
+  const startedKey = `dcsim:started:v2:${template.id}:${sim.id}`;
 
   const consultaFields = useCallback(
     () => ({
@@ -63,10 +52,24 @@ export default function ChatPanel({ template, sim, clinicName, onClose }: Props)
     [sim]
   );
 
-  const start = useCallback(async () => {
-    setStarting(true);
-    const rendered = renderTemplate(template.message, buildTemplateVars(sim, clinicName));
-    const msgs: ChatMessage[] = [ana(rendered)];
+  const rendered = useCallback(
+    () => renderTemplate(template.message, buildTemplateVars(sim, clinicName)),
+    [template, sim, clinicName]
+  );
+
+  // Busca o histórico no banco. Retorna null se o banco não respondeu.
+  const fetchHistory = useCallback(async (): Promise<ChatMessage[] | null> => {
+    try {
+      const res = await fetch(`/api/history?phone=${encodeURIComponent(sim.phone)}`);
+      const j = (await res.json()) as { ok: boolean; messages?: HistoryMsg[]; error?: string };
+      if (!j.ok || !j.messages) return null;
+      return j.messages.map((m, i) => ({ id: `h${i}-${m.ts}`, role: m.role, text: m.text, ts: m.ts }));
+    } catch {
+      return null;
+    }
+  }, [sim.phone]);
+
+  const dispatch = useCallback(async (): Promise<string | null> => {
     try {
       const res = await fetch("/api/disparo", {
         method: "POST",
@@ -74,40 +77,60 @@ export default function ChatPanel({ template, sim, clinicName, onClose }: Props)
         body: JSON.stringify({
           phone: sim.phone,
           nome: sim.nome,
-          mensagem: rendered,
+          mensagem: rendered(),
           dispatch_id: `${template.id}:${sim.phone}`,
           tipo_disparo: template.tipo_disparo ?? null,
           ...consultaFields(),
         }),
       });
       const r: ApiResult<DisparoOut> = await res.json();
-      if (!r.ok) {
-        msgs.push(sys(`⚠️ Falha ao registrar o disparo no backend: ${r.error ?? "erro"}`));
-      }
+      return r.ok ? null : r.error ?? "erro";
     } catch (e) {
-      msgs.push(sys(`⚠️ Erro de rede ao registrar o disparo: ${e instanceof Error ? e.message : ""}`));
+      return e instanceof Error ? e.message : "erro de rede";
     }
-    setMessages(msgs);
-    persist(msgs);
-    setStarting(false);
-  }, [template, sim, clinicName, consultaFields, persist]);
+  }, [template, sim, rendered, consultaFields]);
 
-  // Carrega a conversa salva ou inicia (dispara o template) quando o card muda.
+  // Ao abrir (ou trocar de card): dispara o template uma vez e carrega o histórico.
   useEffect(() => {
-    let saved: ChatMessage[] | null = null;
-    try {
-      const raw = localStorage.getItem(storageKey);
-      if (raw) saved = JSON.parse(raw) as ChatMessage[];
-    } catch {
-      saved = null;
-    }
-    if (saved && saved.length) {
-      setMessages(saved);
-    } else {
-      void start();
-    }
+    let alive = true;
+    (async () => {
+      setBusy(true);
+      setMessages([]);
+      const extra: ChatMessage[] = [];
+      let started = false;
+      try {
+        started = !!localStorage.getItem(startedKey);
+      } catch {
+        /* ignore */
+      }
+      if (!started) {
+        const err = await dispatch();
+        try {
+          localStorage.setItem(startedKey, "1");
+        } catch {
+          /* ignore */
+        }
+        if (err) extra.push(sys(`⚠️ Falha ao registrar o disparo: ${err}`));
+      }
+      const hist = await fetchHistory();
+      if (!alive) return;
+      if (hist === null) {
+        // Sem banco disponível: mostra ao menos o template renderizado.
+        setMessages([
+          ana(rendered()),
+          sys("⚠️ Não consegui ler o histórico do banco (confira DENTAL_CARD_DATABASE_URL)."),
+          ...extra,
+        ]);
+      } else {
+        setMessages([...hist, ...extra]);
+      }
+      setBusy(false);
+    })();
+    return () => {
+      alive = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storageKey]);
+  }, [startedKey]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -115,10 +138,9 @@ export default function ChatPanel({ template, sim, clinicName, onClose }: Props)
 
   const send = useCallback(async () => {
     const text = input.trim();
-    if (!text || loading || starting) return;
-    const withLead = [...messages, lead(text)];
-    setMessages(withLead);
-    persist(withLead);
+    if (!text || loading || busy) return;
+    const optimistic = [...messages, lead(text)];
+    setMessages(optimistic);
     setInput("");
     setLoading(true);
     try {
@@ -133,37 +155,34 @@ export default function ChatPanel({ template, sim, clinicName, onClose }: Props)
         }),
       });
       const r: ApiResult<WebhookOut> = await res.json();
-      let next: ChatMessage[];
+      const hist = await fetchHistory();
+      const base = hist ?? optimistic;
       if (!r.ok) {
-        next = [...withLead, sys(`⚠️ Erro do backend: ${r.error ?? "erro"}`)];
+        setMessages([...base, sys(`⚠️ Erro do backend: ${r.error ?? "erro"}`)]);
       } else if (r.data?.transferir_humano) {
-        next = [
-          ...withLead,
+        setMessages([
+          ...base,
           sys(`👤 Conversa transferida para atendente humano${r.data.motivo ? ` — ${r.data.motivo}` : ""}`),
-        ];
+        ]);
+      } else if (hist === null) {
+        // Sem banco: adiciona a resposta da Ana ao otimista.
+        setMessages([...optimistic, ana(r.data?.resposta || "(sem resposta)")]);
       } else {
-        next = [...withLead, ana(r.data?.resposta || "(sem resposta)")];
+        setMessages(hist);
       }
-      setMessages(next);
-      persist(next);
     } catch (e) {
-      const next = [...withLead, sys(`⚠️ Erro de rede: ${e instanceof Error ? e.message : ""}`)];
-      setMessages(next);
-      persist(next);
+      setMessages((prev) => [...prev, sys(`⚠️ Erro de rede: ${e instanceof Error ? e.message : ""}`)]);
     } finally {
       setLoading(false);
     }
-  }, [input, loading, starting, messages, sim, consultaFields, persist]);
+  }, [input, loading, busy, messages, sim, consultaFields, fetchHistory]);
 
-  const reiniciar = useCallback(() => {
-    try {
-      localStorage.removeItem(storageKey);
-    } catch {
-      /* ignore */
-    }
-    setMessages([]);
-    void start();
-  }, [storageKey, start]);
+  const atualizar = useCallback(async () => {
+    setBusy(true);
+    const hist = await fetchHistory();
+    if (hist) setMessages(hist);
+    setBusy(false);
+  }, [fetchHistory]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -188,8 +207,8 @@ export default function ChatPanel({ template, sim, clinicName, onClose }: Props)
           </div>
         </div>
         <div className="spacer" />
-        <button className="btn" onClick={reiniciar} title="Reinicia a simulação e reenvia o template">
-          Reiniciar
+        <button className="btn" onClick={() => void atualizar()} title="Recarrega o histórico do banco">
+          Atualizar
         </button>
       </div>
 
@@ -207,7 +226,7 @@ export default function ChatPanel({ template, sim, clinicName, onClose }: Props)
             )}
           </div>
         ))}
-        {starting && <div className="typing">registrando disparo…</div>}
+        {busy && <div className="typing">carregando histórico…</div>}
         {loading && <div className="typing">Ana está digitando…</div>}
         <div ref={endRef} />
       </div>
@@ -219,9 +238,9 @@ export default function ChatPanel({ template, sim, clinicName, onClose }: Props)
           onKeyDown={onKeyDown}
           placeholder="Responda como o lead…  (Enter envia, Shift+Enter quebra linha)"
           rows={1}
-          disabled={starting}
+          disabled={busy}
         />
-        <button className="send" onClick={() => void send()} disabled={loading || starting || !input.trim()}>
+        <button className="send" onClick={() => void send()} disabled={loading || busy || !input.trim()}>
           Enviar
         </button>
       </div>

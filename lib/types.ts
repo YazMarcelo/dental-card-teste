@@ -30,8 +30,30 @@ export interface TemplateDef {
   requiresAppointment?: boolean;
   /** observação curta exibida na tela */
   note?: string;
-  /** números simulados desse template */
+  /** variáveis padrão aplicadas a números novos (+ novo número) e à prévia:
+   *  ex.: { indicante, dia1, dia2 }. `nome` não entra aqui — vem do card. */
+  defaults?: Record<string, string>;
+  /** quando "confirmaveis", os cards vêm do banco (leads com agendamento),
+   *  não de `simulations`, e não há botão "+ novo número". */
+  dynamicSource?: "confirmaveis";
+  /** números simulados desse template (ignorado quando há dynamicSource) */
   simulations: Simulation[];
+}
+
+/** Lead com agendamento (vindo do banco) — vira card do template de confirmação. */
+export interface Confirmavel {
+  phone: string;
+  nome: string | null;
+  consulta_id_externo: string;
+  status: string | null;
+}
+
+/** Uma mensagem do histórico (tabela mensagens_log do dental-card). */
+export interface HistoryMsg {
+  role: ChatRole;
+  text: string;
+  ts: number;
+  origem?: string | null;
 }
 
 export type ChatRole = "ana" | "lead" | "system";
