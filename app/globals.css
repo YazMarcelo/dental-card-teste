@@ -48,6 +48,9 @@ body {
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   font-size: 15px;
   line-height: 1.45;
+  overflow-x: hidden;
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior-y: none;
 }
 
 button {
@@ -59,7 +62,8 @@ button {
 .app {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100vh; /* fallback */
+  height: 100dvh;
 }
 
 .topbar {
@@ -215,12 +219,13 @@ button {
   flex-direction: column;
   gap: 2px;
   text-align: left;
-  padding: 9px 12px;
+  padding: 10px 12px;
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--panel-2);
   color: var(--text);
   min-width: 150px;
+  flex: 1 1 150px;
   transition: border-color 0.12s, transform 0.05s;
 }
 .card:hover {
@@ -422,15 +427,81 @@ button {
 
 /* ---------- Responsivo ---------- */
 @media (max-width: 860px) {
+  .topbar {
+    padding: 10px 14px;
+    gap: 8px;
+  }
+  .topbar h1 {
+    font-size: 15px;
+  }
+  .topbar .sub {
+    display: none;
+  }
+  .health {
+    font-size: 11.5px;
+    padding: 4px 9px;
+  }
+
   .body {
     grid-template-columns: 1fr;
   }
+  .list {
+    border-right: none;
+    padding: 14px;
+  }
+
+  /* Chat vira tela cheia por cima da lista */
   .chat {
     position: fixed;
     inset: 0;
     z-index: 30;
+    height: 100vh; /* fallback */
+    height: 100dvh;
   }
   .chat.hidden {
     display: none;
+  }
+  .chat-head {
+    padding: 10px 12px;
+  }
+  .chat-head .btn.ghost {
+    font-size: 20px;
+    padding: 6px 10px;
+  }
+
+  .bubble {
+    max-width: 85%;
+  }
+
+  /* font-size 16px evita o zoom automático do iOS ao focar o campo */
+  .composer textarea {
+    font-size: 16px;
+  }
+}
+
+@media (max-width: 440px) {
+  .tpl {
+    padding: 12px;
+  }
+  .tpl-msg {
+    font-size: 13px;
+  }
+  .card {
+    min-width: 0;
+    flex-basis: 130px;
+  }
+  .messages {
+    padding: 12px;
+    gap: 7px;
+  }
+  .composer {
+    padding: 10px 12px;
+    gap: 8px;
+  }
+  .send {
+    padding: 0 14px;
+  }
+  .chat-empty {
+    padding: 20px;
   }
 }
